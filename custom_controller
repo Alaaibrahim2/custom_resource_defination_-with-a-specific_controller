@@ -1,0 +1,223 @@
+import kopf
+from kubernetes import client, config
+
+# ==========================================
+# CONNECT TO CLUSTER
+# ==========================================
+
+config.load_kube_config()
+
+apps_api = client.AppsV1Api()
+
+# ==========================================
+# CREATE EVENT
+# ==========================================
+
+@kopf.on.create('mycompany.com', 'v1', 'apps')
+
+def create_fn(spec, name, namespace, meta, **kwargs):
+
+    print("\n========== CREATE EVENT ==========")
+
+    # --------------------------------------
+    # DESIRED STATE
+    # --------------------------------------
+
+    desired_replicas = spec.get("replicas", 1)
+
+    desired_image = spec.get("image", "nginx")
+
+    print(f"\nDesired replicas = {desired_replicas}")
+
+    print(f"Desired image = {desired_image}")
+
+    # --------------------------------------
+    # CURRENT STATE
+    # --------------------------------------
+
+    current_replicas = 0
+
+    deployment_found = False
+
+    deployments = apps_api.list_namespaced_deployment(
+        namespace=namespace
+    )
+
+    for deployment in deployments.items:
+
+        owners = deployment.metadata.owner_references or []
+
+        for owner in owners:
+
+            if (
+                owner.kind == "App"
+                and owner.uid == meta['uid']
+            ):
+
+                deployment_found = True
+
+                current_replicas = (
+                    deployment.status.ready_replicas or 0
+                )
+
+                print(
+                    f"\nFound deployment: {deployment.metadata.name}"
+                )
+
+                print(
+                    f"Current replicas = {current_replicas}"
+                )
+
+    # --------------------------------------
+    # RECONCILIATION
+    # --------------------------------------
+
+    if not deployment_found:
+
+        print("\nDeployment not found")
+        print("Need CREATE")
+
+        deployment_body = client.V1Deployment(
+
+            metadata=client.V1ObjectMeta(
+
+                name=f"{name}-deployment",
+
+                labels={
+                    "app": name
+                },
+
+                owner_references=[
+
+                    client.V1OwnerReference(
+                        api_version="mycompany.com/v1",
+                        kind="App",
+                        name=name,
+                        uid=meta['uid']
+                    )
+                ]
+            ),
+
+            spec=client.V1DeploymentSpec(
+
+                replicas=desired_replicas,
+
+                selector=client.V1LabelSelector(
+                    match_labels={
+                        "app": name
+                    }
+                ),
+
+                template=client.V1PodTemplateSpec(
+
+                    metadata=client.V1ObjectMeta(
+                        labels={
+                            "app": name
+                        }
+                    ),
+
+                    spec=client.V1PodSpec(
+
+                        containers=[
+                            client.V1Container(
+                                name="app-container",
+                                image=desired_image
+                            )
+                        ]
+                    )
+                )
+            )
+        )
+
+        apps_api.create_namespaced_deployment(
+            namespace=namespace,
+            body=deployment_body
+        )
+
+        print("\nDeployment Created")
+
+
+# ==========================================
+# UPDATE EVENT
+# ==========================================
+
+@kopf.on.update('mycompany.com', 'v1', 'apps')
+
+def update_fn(spec, name, namespace, meta, **kwargs):
+
+    print("\n========== UPDATE EVENT ==========")
+
+    desired_replicas = spec.get("replicas", 1)
+
+    desired_image = spec.get("image", "nginx")
+
+    print(f"\nNew desired replicas = {desired_replicas}")
+
+    print(f"New desired image = {desired_image}")
+
+    deployment_name = f"{name}-deployment"
+
+    deployment = apps_api.read_namespaced_deployment(
+        name=deployment_name,
+        namespace=namespace
+    )
+
+    # --------------------------------------
+    # CURRENT STATE
+    # --------------------------------------
+
+    current_replicas = (
+        deployment.status.ready_replicas or 0
+    )
+
+    current_image = (
+        deployment.spec.template.spec.containers[0].image
+    )
+
+    print(f"\nCurrent replicas = {current_replicas}")
+
+    print(f"Current image = {current_image}")
+
+    # --------------------------------------
+    # RECONCILIATION
+    # --------------------------------------
+
+    if (
+        current_replicas != desired_replicas
+        or current_image != desired_image
+    ):
+
+        print("\nNeed UPDATE")
+
+        deployment.spec.replicas = desired_replicas
+
+        deployment.spec.template.spec.containers[0].image = (
+            desired_image
+        )
+
+        apps_api.patch_namespaced_deployment(
+            name=deployment_name,
+            namespace=namespace,
+            body=deployment
+        )
+
+        print("\nDeployment Updated")
+
+    else:
+
+        print("\nAlready matched")
+
+
+# ==========================================
+# DELETE EVENT
+# ==========================================
+
+@kopf.on.delete('mycompany.com', 'v1', 'apps')
+
+def delete_fn(name, **kwargs):
+
+    print("\n========== DELETE EVENT ==========")
+
+    print(f"\nApp deleted: {name}")
+
+    print("\nCleanup finished")
