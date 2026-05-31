@@ -117,6 +117,4 @@ spec:
 
 ---
 
-# Author
 
-Omar
